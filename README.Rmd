@@ -1,0 +1,70 @@
+---
+title: "Plotting survival probabilities from {brms} models"
+output: github_document
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r libraries, message=FALSE,warning=FALSE}
+library(tidyverse)
+library(simsurv)
+library(survival)
+library(brms)
+library(tidybayes)
+library(here)
+
+median_weibull  <- function(lambda,gamma) { (log(2)^(1/gamma))/lambda
+  }
+theme_set(theme_tidybayes())
+options(brms.file_refit = "on_change")
+```
+
+```{r simparams, echo=FALSE}
+lambdas <- 0.1
+gammas <-1.5
+maxt <- 15
+trt_loghr <- -0.5
+N=1000
+```
+
+Let's simulate som survival data. We'll use a Weibull distribution with $\kappa =$ `r gammas` and $\lambda =$ `r lambdas` yielding a median survival time of `r round(median_weibull(lambdas,gammas),1)`. Log(HR) is set to `r trt_loghr`
+
+```{r simulate data, message=FALSE}
+covs <- data.frame(id = 1:N, trt = stats::rbinom(N, 1L, 0.5))
+set.seed(124)
+survdata <- simsurv(dist = "weibull",
+        lambdas = lambdas,
+        gammas = gammas,
+        betas = c(trt = trt_loghr),
+        x = covs, 
+        maxt = maxt
+        ) |> 
+  merge(covs)
+```
+
+
+```{r estimated median survival}
+survminer::surv_median( survfit(Surv(eventtime,status)~trt,data=survdata))
+median_weibull(lambdas,gammas)
+```
+
+```{r brms_fit}
+brms_weibull <-
+  brm(
+    eventtime | cens(1 - status) ~ 0 + Intercept + trt,
+    family = weibull(),
+    prior = prior(normal(2, 1.5), class = b, coef = Intercept) + prior(normal(0, 1.0), class = b, coef = trt),
+    data = survdata,
+    file = here("fits/brms_weibull")
+  )
+
+brms_weibull |> 
+  spread_draws(b_Intercept, shape) |> 
+  mutate(lambda=exp(-b_Intercept),
+         median_suvival=median_weibull(lambda,shape)) |> 
+  median_hdi(median_suvival)
+```
+
