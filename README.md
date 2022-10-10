@@ -1,179 +1,289 @@
-Plotting survival probabilities from {brms} models
+Marginal survival probabilities from {brms} weibull models
 ================
 
 ``` r
 library(tidyverse)
-library(simsurv)
 library(survival)
 library(brms)
 library(tidybayes)
 library(here)
 
-median_weibull  <- function(lambda,gamma) { (log(2)^(1/gamma))/lambda
-  }
 theme_set(theme_tidybayes())
-options(brms.file_refit = "on_change")
 ```
 
-Let’s simulate som survival data. We’ll use a Weibull distribution with
-$\kappa =$ 1.5 and $\lambda =$ 0.1 yielding a median survival time of
-7.8. Log(HR) is set to -0.5
+We will define som usefull functions for working with the weibull
+distribution, first median survival as
 
 ``` r
-covs <- data.frame(id = 1:N, trt = stats::rbinom(N, 1L, 0.5))
-set.seed(124)
-survdata <- simsurv(dist = "weibull",
-        lambdas = lambdas,
-        gammas = gammas,
-        betas = c(trt = trt_loghr),
-        x = covs, 
-        maxt = maxt
-        ) |> 
-  merge(covs)
+median_weibull <- function(scale, shape) {
+    (log(2)^(1/shape)) * scale
+}
+```
+
+*brms* uses a `scale,shape` parametrisation for the Weibull distribution
+but the main parameter in the model is $\mu$. We convert $\mu$ and
+`shape` to `scale` through as described
+[here](https://stats.stackexchange.com/questions/542106/difference-in-fitting-to-right-censored-data-between-mle-and-bayesian-method),
+using the formula $scale = \frac{\mu}{\Gamma(1+\frac{1}{shape})}$
+
+``` r
+weibull_mu_to_scale <- function(mu, shape) {
+    mu/gamma(1 + 1/shape)
+}
+```
+
+We also need the Weibull survival function to calculate and plot the
+survival curves
+
+``` r
+weibull_survival <- function(scale, shape, time) {
+    exp(-(time/scale)^shape)
+}
+```
+
+We’ll use the `colon` data from the `survival` package, focusing on the
+mortality endpoint and the effect of `rx`, marginalising over other
+covariates.
+
+``` r
+colon <- colon |>
+    filter(etype == 2) |>
+    mutate(censored = 1 - status, across(rx, as.factor), across(sex, ~factor(., labels = c("Female",
+        "Male"))), across(c(obstruct, perfor, adhere), as.factor), across(differ,
+        ~ordered(., labels = c("well", "moderate", "poor"))), across(extent, ~ordered(.,
+        labels = c("submucosa", "muscle", "serosa", "contiguous structures"))), across(surg,
+        ~ordered(., labels = c("short", "long"))))
 ```
 
 ``` r
-survminer::surv_median( survfit(Surv(eventtime,status)~trt,data=survdata))
+formula_simple <- bf(time + 1 | cens(censored) ~ rx + sex + age + nodes + mo(differ) +
+    adhere, family = weibull)
+
+
+prior_simple <- prior(normal(0, 2.5), class = b)
+
+
+
+
+weibull_simple <- brm(formula = formula_simple, prior = prior_simple, data = colon,
+    file = here("fits/weibull_simple.rds"), file_refit = "never")
+
+weibull_simple
 ```
 
-    ## Warning: `select_()` was deprecated in dplyr 0.7.0.
-    ## Please use `select()` instead.
-
-    ##   strata   median    lower    upper
-    ## 1  trt=0 3.714715 3.416399 4.060114
-    ## 2  trt=1 5.051091 4.627938 5.346971
-
-``` r
-median_weibull(lambdas,gammas)
-```
-
-    ## [1] 7.832198
-
-``` r
-brms_weibull <-
-  brm(
-    eventtime | cens(1 - status) ~ 0 + Intercept + trt,
-    family = weibull(),
-    prior = prior(normal(2, 1.5), class = b, coef = Intercept) + prior(normal(0, 1.0), class = b, coef = trt),
-    data = survdata,
-    file = here("fits/brms_weibull")
-  )
-```
-
-    ## Compiling Stan program...
-
-    ## Start sampling
-
+    ##  Family: weibull 
+    ##   Links: mu = log; shape = identity 
+    ## Formula: time + 1 | cens(censored) ~ rx + sex + age + nodes + mo(differ) + adhere 
+    ##    Data: colon (Number of observations: 888) 
+    ##   Draws: 4 chains, each with iter = 2000; warmup = 1000; thin = 1;
+    ##          total post-warmup draws = 4000
     ## 
-    ## SAMPLING FOR MODEL '261a0531cb97c58bb1a8d3a4244c13de' NOW (CHAIN 1).
-    ## Chain 1: 
-    ## Chain 1: Gradient evaluation took 0.000903 seconds
-    ## Chain 1: 1000 transitions using 10 leapfrog steps per transition would take 9.03 seconds.
-    ## Chain 1: Adjust your expectations accordingly!
-    ## Chain 1: 
-    ## Chain 1: 
-    ## Chain 1: Iteration:    1 / 2000 [  0%]  (Warmup)
-    ## Chain 1: Iteration:  200 / 2000 [ 10%]  (Warmup)
-    ## Chain 1: Iteration:  400 / 2000 [ 20%]  (Warmup)
-    ## Chain 1: Iteration:  600 / 2000 [ 30%]  (Warmup)
-    ## Chain 1: Iteration:  800 / 2000 [ 40%]  (Warmup)
-    ## Chain 1: Iteration: 1000 / 2000 [ 50%]  (Warmup)
-    ## Chain 1: Iteration: 1001 / 2000 [ 50%]  (Sampling)
-    ## Chain 1: Iteration: 1200 / 2000 [ 60%]  (Sampling)
-    ## Chain 1: Iteration: 1400 / 2000 [ 70%]  (Sampling)
-    ## Chain 1: Iteration: 1600 / 2000 [ 80%]  (Sampling)
-    ## Chain 1: Iteration: 1800 / 2000 [ 90%]  (Sampling)
-    ## Chain 1: Iteration: 2000 / 2000 [100%]  (Sampling)
-    ## Chain 1: 
-    ## Chain 1:  Elapsed Time: 2.06556 seconds (Warm-up)
-    ## Chain 1:                2.10977 seconds (Sampling)
-    ## Chain 1:                4.17533 seconds (Total)
-    ## Chain 1: 
+    ## Population-Level Effects: 
+    ##           Estimate Est.Error l-95% CI u-95% CI Rhat Bulk_ESS Tail_ESS
+    ## Intercept     8.73      0.28     8.18     9.30 1.00     5154     2847
+    ## rxLev         0.10      0.11    -0.11     0.33 1.00     3895     2811
+    ## rxLevP5FU     0.40      0.12     0.18     0.64 1.00     4307     3003
+    ## sexMale       0.03      0.09    -0.16     0.21 1.00     5013     2807
+    ## age          -0.01      0.00    -0.01     0.00 1.00     6364     2852
+    ## nodes        -0.09      0.01    -0.11    -0.07 1.00     4300     2459
+    ## adhere1      -0.24      0.12    -0.48     0.01 1.00     4503     2817
+    ## modiffer     -0.15      0.09    -0.31     0.04 1.00     2251     1854
     ## 
-    ## SAMPLING FOR MODEL '261a0531cb97c58bb1a8d3a4244c13de' NOW (CHAIN 2).
-    ## Chain 2: 
-    ## Chain 2: Gradient evaluation took 0.000258 seconds
-    ## Chain 2: 1000 transitions using 10 leapfrog steps per transition would take 2.58 seconds.
-    ## Chain 2: Adjust your expectations accordingly!
-    ## Chain 2: 
-    ## Chain 2: 
-    ## Chain 2: Iteration:    1 / 2000 [  0%]  (Warmup)
-    ## Chain 2: Iteration:  200 / 2000 [ 10%]  (Warmup)
-    ## Chain 2: Iteration:  400 / 2000 [ 20%]  (Warmup)
-    ## Chain 2: Iteration:  600 / 2000 [ 30%]  (Warmup)
-    ## Chain 2: Iteration:  800 / 2000 [ 40%]  (Warmup)
-    ## Chain 2: Iteration: 1000 / 2000 [ 50%]  (Warmup)
-    ## Chain 2: Iteration: 1001 / 2000 [ 50%]  (Sampling)
-    ## Chain 2: Iteration: 1200 / 2000 [ 60%]  (Sampling)
-    ## Chain 2: Iteration: 1400 / 2000 [ 70%]  (Sampling)
-    ## Chain 2: Iteration: 1600 / 2000 [ 80%]  (Sampling)
-    ## Chain 2: Iteration: 1800 / 2000 [ 90%]  (Sampling)
-    ## Chain 2: Iteration: 2000 / 2000 [100%]  (Sampling)
-    ## Chain 2: 
-    ## Chain 2:  Elapsed Time: 1.99354 seconds (Warm-up)
-    ## Chain 2:                2.08666 seconds (Sampling)
-    ## Chain 2:                4.0802 seconds (Total)
-    ## Chain 2: 
+    ## Simplex Parameters: 
+    ##              Estimate Est.Error l-95% CI u-95% CI Rhat Bulk_ESS Tail_ESS
+    ## modiffer1[1]     0.31      0.23     0.01     0.87 1.00     2602     2029
+    ## modiffer1[2]     0.69      0.23     0.13     0.99 1.00     2602     2029
     ## 
-    ## SAMPLING FOR MODEL '261a0531cb97c58bb1a8d3a4244c13de' NOW (CHAIN 3).
-    ## Chain 3: 
-    ## Chain 3: Gradient evaluation took 0.001145 seconds
-    ## Chain 3: 1000 transitions using 10 leapfrog steps per transition would take 11.45 seconds.
-    ## Chain 3: Adjust your expectations accordingly!
-    ## Chain 3: 
-    ## Chain 3: 
-    ## Chain 3: Iteration:    1 / 2000 [  0%]  (Warmup)
-    ## Chain 3: Iteration:  200 / 2000 [ 10%]  (Warmup)
-    ## Chain 3: Iteration:  400 / 2000 [ 20%]  (Warmup)
-    ## Chain 3: Iteration:  600 / 2000 [ 30%]  (Warmup)
-    ## Chain 3: Iteration:  800 / 2000 [ 40%]  (Warmup)
-    ## Chain 3: Iteration: 1000 / 2000 [ 50%]  (Warmup)
-    ## Chain 3: Iteration: 1001 / 2000 [ 50%]  (Sampling)
-    ## Chain 3: Iteration: 1200 / 2000 [ 60%]  (Sampling)
-    ## Chain 3: Iteration: 1400 / 2000 [ 70%]  (Sampling)
-    ## Chain 3: Iteration: 1600 / 2000 [ 80%]  (Sampling)
-    ## Chain 3: Iteration: 1800 / 2000 [ 90%]  (Sampling)
-    ## Chain 3: Iteration: 2000 / 2000 [100%]  (Sampling)
-    ## Chain 3: 
-    ## Chain 3:  Elapsed Time: 2.00613 seconds (Warm-up)
-    ## Chain 3:                1.93597 seconds (Sampling)
-    ## Chain 3:                3.9421 seconds (Total)
-    ## Chain 3: 
+    ## Family Specific Parameters: 
+    ##       Estimate Est.Error l-95% CI u-95% CI Rhat Bulk_ESS Tail_ESS
+    ## shape     1.04      0.05     0.95     1.13 1.00     4255     3199
     ## 
-    ## SAMPLING FOR MODEL '261a0531cb97c58bb1a8d3a4244c13de' NOW (CHAIN 4).
-    ## Chain 4: 
-    ## Chain 4: Gradient evaluation took 0.000262 seconds
-    ## Chain 4: 1000 transitions using 10 leapfrog steps per transition would take 2.62 seconds.
-    ## Chain 4: Adjust your expectations accordingly!
-    ## Chain 4: 
-    ## Chain 4: 
-    ## Chain 4: Iteration:    1 / 2000 [  0%]  (Warmup)
-    ## Chain 4: Iteration:  200 / 2000 [ 10%]  (Warmup)
-    ## Chain 4: Iteration:  400 / 2000 [ 20%]  (Warmup)
-    ## Chain 4: Iteration:  600 / 2000 [ 30%]  (Warmup)
-    ## Chain 4: Iteration:  800 / 2000 [ 40%]  (Warmup)
-    ## Chain 4: Iteration: 1000 / 2000 [ 50%]  (Warmup)
-    ## Chain 4: Iteration: 1001 / 2000 [ 50%]  (Sampling)
-    ## Chain 4: Iteration: 1200 / 2000 [ 60%]  (Sampling)
-    ## Chain 4: Iteration: 1400 / 2000 [ 70%]  (Sampling)
-    ## Chain 4: Iteration: 1600 / 2000 [ 80%]  (Sampling)
-    ## Chain 4: Iteration: 1800 / 2000 [ 90%]  (Sampling)
-    ## Chain 4: Iteration: 2000 / 2000 [100%]  (Sampling)
-    ## Chain 4: 
-    ## Chain 4:  Elapsed Time: 2.0047 seconds (Warm-up)
-    ## Chain 4:                1.97408 seconds (Sampling)
-    ## Chain 4:                3.97878 seconds (Total)
-    ## Chain 4:
+    ## Draws were sampled using sample(hmc). For each parameter, Bulk_ESS
+    ## and Tail_ESS are effective sample size measures, and Rhat is the potential
+    ## scale reduction factor on split chains (at convergence, Rhat = 1).
 
 ``` r
-brms_weibull |> 
-  spread_draws(b_Intercept, shape) |> 
-  mutate(lambda=exp(-b_Intercept),
-         median_suvival=median_weibull(lambda,shape)) |> 
-  median_hdi(median_suvival)
+plot(conditional_effects(weibull_simple), ask = FALSE)
 ```
 
-    ## # A tibble: 1 × 6
-    ##   median_suvival .lower .upper .width .point .interval
-    ##            <dbl>  <dbl>  <dbl>  <dbl> <chr>  <chr>    
-    ## 1           3.28   3.07   3.49   0.95 median hdi
+![](README_files/figure-gfm/simple%20weibull%20fit%20conditional%20effects-1.png)<!-- -->![](README_files/figure-gfm/simple%20weibull%20fit%20conditional%20effects-2.png)<!-- -->![](README_files/figure-gfm/simple%20weibull%20fit%20conditional%20effects-3.png)<!-- -->![](README_files/figure-gfm/simple%20weibull%20fit%20conditional%20effects-4.png)<!-- -->![](README_files/figure-gfm/simple%20weibull%20fit%20conditional%20effects-5.png)<!-- -->![](README_files/figure-gfm/simple%20weibull%20fit%20conditional%20effects-6.png)<!-- -->
+
+``` r
+posterior_survival_probability <- weibull_simple |>
+    linpred_draws(marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_simple),
+        value = "mu", transform = TRUE, dpar = "shape") |>
+    mutate(scale = mu/gamma(1 + 1/shape)) |>
+    group_by(rx, .draw, ) |>
+    summarise(shape = mean(shape), scale = mean(scale)) |>
+    ungroup() |>
+    expand(nesting(.draw, rx, scale, shape), time = modelr::seq_range(colon$time,
+        n = 101)) |>
+    mutate(S = weibull_survival(scale, shape, time))
+```
+
+``` r
+median_survival <- posterior_survival_probability |>
+    select(-c(time, S)) |>
+    distinct() |>
+    group_by(.draw, rx) |>
+    summarise(median_survival = median_weibull(scale, shape)) |>
+    group_by(rx) |>
+    median_hdi(median_survival)
+
+
+posterior_survival_probability |>
+    ggplot() + aes(x = time, y = S, group = rx) + stat_lineribbon(.width = c(0.99,
+    0.95, 0.8, 0.5), color = "#08519C") + geom_segment(aes(x = median_survival, xend = median_survival,
+    y = 0, yend = 0.5), linetype = "dashed", data = median_survival) + geom_segment(aes(x = 0,
+    xend = median_survival, y = 0.5, yend = 0.5), linetype = "dashed", data = median_survival) +
+    facet_grid(rows = vars(rx)) + scale_fill_brewer(name = "Confidence level") +
+    theme_light() + theme(legend.position = "bottom") + labs(title = "Marginal adjusted surival probabilities by treatment group",
+    subtitle = "(Population averaged)", caption = "Dashed lines denote estimated median survival")
+```
+
+![](README_files/figure-gfm/median%20survival%20simple%20weibull-1.png)<!-- -->
+
+``` r
+formula_shape_scale <- bf(time + 1 | cens(censored) ~ rx + sex + age + nodes + mo(differ) +
+    adhere, shape ~ 0 + rx, family = weibull)
+
+get_prior(formula_shape_scale, data = colon)
+```
+
+    ##                   prior     class      coef group resp  dpar nlpar lb ub
+    ##                  (flat)         b                                       
+    ##                  (flat)         b   adhere1                             
+    ##                  (flat)         b       age                             
+    ##                  (flat)         b  modiffer                             
+    ##                  (flat)         b     nodes                             
+    ##                  (flat)         b     rxLev                             
+    ##                  (flat)         b rxLevP5FU                             
+    ##                  (flat)         b   sexMale                             
+    ##  student_t(3, 7.6, 2.5) Intercept                                       
+    ##            dirichlet(1)      simo modiffer1                             
+    ##                  (flat)         b                      shape            
+    ##                  (flat)         b     rxLev            shape            
+    ##                  (flat)         b rxLevP5FU            shape            
+    ##                  (flat)         b     rxObs            shape            
+    ##        source
+    ##       default
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##       default
+    ##       default
+    ##       default
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+
+``` r
+prior_shape_scale <- prior(normal(0, 2.5), class = b) + prior(normal(0, 0.5), class = b,
+    dpar = shape)
+
+
+
+
+weibull_shape_scale <- brm(formula = formula_shape_scale, prior = prior_shape_scale,
+    data = colon, file = here("fits/weibull_shape_scale.rds"), file_refit = "never")
+
+prior_summary(weibull_shape_scale)
+```
+
+    ##                   prior     class      coef group resp  dpar nlpar lb ub
+    ##          normal(0, 2.5)         b                                       
+    ##          normal(0, 2.5)         b   adhere1                             
+    ##          normal(0, 2.5)         b       age                             
+    ##          normal(0, 2.5)         b  modiffer                             
+    ##          normal(0, 2.5)         b     nodes                             
+    ##          normal(0, 2.5)         b     rxLev                             
+    ##          normal(0, 2.5)         b rxLevP5FU                             
+    ##          normal(0, 2.5)         b   sexMale                             
+    ##          normal(0, 0.5)         b                      shape            
+    ##          normal(0, 0.5)         b     rxLev            shape            
+    ##          normal(0, 0.5)         b rxLevP5FU            shape            
+    ##          normal(0, 0.5)         b     rxObs            shape            
+    ##  student_t(3, 7.6, 2.5) Intercept                                       
+    ##            dirichlet(1)      simo modiffer1                             
+    ##        source
+    ##          user
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##          user
+    ##  (vectorized)
+    ##  (vectorized)
+    ##  (vectorized)
+    ##       default
+    ##       default
+
+``` r
+plot(conditional_effects(weibull_shape_scale), ask = FALSE)
+```
+
+![](README_files/figure-gfm/scale%20and%20shape%20weibull%20distributional%20fit-1.png)<!-- -->![](README_files/figure-gfm/scale%20and%20shape%20weibull%20distributional%20fit-2.png)<!-- -->![](README_files/figure-gfm/scale%20and%20shape%20weibull%20distributional%20fit-3.png)<!-- -->![](README_files/figure-gfm/scale%20and%20shape%20weibull%20distributional%20fit-4.png)<!-- -->![](README_files/figure-gfm/scale%20and%20shape%20weibull%20distributional%20fit-5.png)<!-- -->![](README_files/figure-gfm/scale%20and%20shape%20weibull%20distributional%20fit-6.png)<!-- -->
+
+``` r
+posterior_survival_probability_ss <- weibull_shape_scale |>
+    linpred_draws(marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_shape_scale),
+        value = "mu", transform = TRUE, dpar = "shape") |>
+    mutate(scale = weibull_mu_to_scale(mu, shape)) |>
+    group_by(rx, .draw, ) |>
+    summarise(shape = mean(shape), scale = mean(scale)) |>
+    ungroup() |>
+    expand(nesting(.draw, rx, scale, shape), time = modelr::seq_range(colon$time,
+        n = 101)) |>
+    mutate(S = weibull_survival(scale, shape, time))
+```
+
+``` r
+posterior_survival_probability_ss |>
+    ggplot() + aes(x = time, y = S, group = rx) + stat_lineribbon(.width = c(0.99,
+    0.95, 0.8, 0.5), color = "#08519C") + geom_segment(aes(x = median_survival, xend = median_survival,
+    y = 0, yend = 0.5), linetype = "dashed", data = median_survival) + geom_segment(aes(x = 0,
+    xend = median_survival, y = 0.5, yend = 0.5), linetype = "dashed", data = median_survival) +
+    facet_grid(rows = vars(rx)) + scale_fill_brewer(name = "Confidence level") +
+    theme_light() + theme(legend.position = "bottom") + labs(title = "Marginal adjusted surival probabilities by treatment group",
+    subtitle = "(Population averaged)", caption = "Dashed lines denote estimated median survival")
+```
+
+![](README_files/figure-gfm/scale%20shape%20predicted%20survival%20plot-1.png)<!-- -->
+
+``` r
+weibull_simple |>
+    gather_draws(`b_rx.*`, regex = TRUE) |>
+    mutate(model = "simple") |>
+    bind_rows(weibull_shape_scale |>
+        gather_draws(`b_rx.*`, regex = TRUE) |>
+        mutate(model = "scale_shape")) |>
+    ggplot() + aes(x = .value, y = .variable, group = model, fill = model) + stat_gradientinterval(position = position_dodge(width = 1))
+```
+
+![](README_files/figure-gfm/compare%20rx%20parameters-1.png)<!-- -->
+
+``` r
+posterior_survival_probability |>
+    select(-c(time, S)) |>
+    distinct() |>
+    group_by(.draw, rx) |>
+    summarise(median_survival = median_weibull(scale, shape)) |>
+    mutate(model = "simple") |>
+    bind_rows(posterior_survival_probability_ss |>
+        select(-c(time, S)) |>
+        distinct() |>
+        group_by(.draw, rx) |>
+        summarise(median_survival = median_weibull(scale, shape)) |>
+        mutate(model = "shape_scale")) |>
+    ggplot() + aes(x = median_survival, y = rx, group = model, fill = model) + stat_gradientinterval(position = position_dodge(width = 1)) +
+    labs(title)
+```
+
+![](README_files/figure-gfm/compare%20marginal%20median%20survival%20estimates-1.png)<!-- -->

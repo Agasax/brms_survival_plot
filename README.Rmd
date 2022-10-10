@@ -1,70 +1,259 @@
 ---
-title: "Plotting survival probabilities from {brms} models"
+title: "Marginal survival probabilities from {brms} weibull models"
 output: github_document
 ---
 
-```{r setup, echo=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r setup, echo=FALSE, warning=FALSE,message=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE, tidy = TRUE,message = FALSE)
 
 ```
 
-```{r libraries, message=FALSE,warning=FALSE}
+```{r libraries}
 library(tidyverse)
-library(simsurv)
 library(survival)
 library(brms)
 library(tidybayes)
 library(here)
 
-median_weibull  <- function(lambda,gamma) { (log(2)^(1/gamma))/lambda
-  }
 theme_set(theme_tidybayes())
-options(brms.file_refit = "on_change")
+
 ```
 
-```{r simparams, echo=FALSE}
-lambdas <- 0.1
-gammas <-1.5
-maxt <- 15
-trt_loghr <- -0.5
-N=1000
+We will define som usefull functions for working with the weibull distribution, first median survival as
+
+```{r median weibull}
+median_weibull  <-  function(scale, shape) {
+    (log(2) ^ (1 / shape)) * scale}
 ```
 
-Let's simulate som survival data. We'll use a Weibull distribution with $\kappa =$ `r gammas` and $\lambda =$ `r lambdas` yielding a median survival time of `r round(median_weibull(lambdas,gammas),1)`. Log(HR) is set to `r trt_loghr`
+*brms* uses a `scale,shape` parametrisation for the Weibull distribution but the main parameter in the model is $\mu$. We convert $\mu$ and `shape` to `scale` through as described [here](https://stats.stackexchange.com/questions/542106/difference-in-fitting-to-right-censored-data-between-mle-and-bayesian-method), using the formula $scale = \frac{\mu}{\Gamma(1+\frac{1}{shape})}$
 
-```{r simulate data, message=FALSE}
-covs <- data.frame(id = 1:N, trt = stats::rbinom(N, 1L, 0.5))
-set.seed(124)
-survdata <- simsurv(dist = "weibull",
-        lambdas = lambdas,
-        gammas = gammas,
-        betas = c(trt = trt_loghr),
-        x = covs, 
-        maxt = maxt
-        ) |> 
-  merge(covs)
+```{r convert from mu and shape to scale}
+
+weibull_mu_to_scale <-   function(mu, shape) {    mu / gamma(1 + 1 / shape)  }
+```
+
+We also need the Weibull survival function to calculate and plot the survival curves
+
+```{r survival function}
+weibull_survival <-  function(scale,shape,time){exp(-(time / scale) ^ shape)}
 ```
 
 
-```{r estimated median survival}
-survminer::surv_median( survfit(Surv(eventtime,status)~trt,data=survdata))
-median_weibull(lambdas,gammas)
-```
 
-```{r brms_fit}
-brms_weibull <-
-  brm(
-    eventtime | cens(1 - status) ~ 0 + Intercept + trt,
-    family = weibull(),
-    prior = prior(normal(2, 1.5), class = b, coef = Intercept) + prior(normal(0, 1.0), class = b, coef = trt),
-    data = survdata,
-    file = here("fits/brms_weibull")
+We'll use the `colon` data from the `survival` package, focusing on the mortality endpoint and the effect of `rx`, marginalising over other covariates. 
+
+```{r load data}
+
+colon <- colon |>
+  filter(etype == 2) |>
+  mutate(
+    censored = 1 - status,
+    across(rx, as.factor),
+    across(sex,  ~ factor(., labels = c("Female", "Male"))),
+    across(c(obstruct, perfor, adhere), as.factor),
+    across(differ,  ~ ordered(., labels = c("well", "moderate", "poor"))),
+    across(extent,  ~ ordered(., labels = c("submucosa", "muscle", "serosa", "contiguous structures"))),
+    across(surg,  ~ ordered(., labels = c("short", "long")))
   )
 
-brms_weibull |> 
-  spread_draws(b_Intercept, shape) |> 
-  mutate(lambda=exp(-b_Intercept),
-         median_suvival=median_weibull(lambda,shape)) |> 
-  median_hdi(median_suvival)
 ```
 
+```{r simple weibull fit}
+formula_simple <- bf(time+1|cens(censored) ~ rx + sex + age + nodes + mo(differ) + adhere,
+                     family = weibull)
+
+
+prior_simple <- prior(normal(0, 2.5), class = b)
+
+
+
+
+weibull_simple <- brm(formula = formula_simple,
+                     prior = prior_simple,
+                     data = colon,
+                     file = here("fits/weibull_simple.rds"),
+                     file_refit = "never")
+
+weibull_simple
+```
+
+
+```{r simple weibull fit conditional effects}
+plot(conditional_effects(weibull_simple),ask=FALSE)
+
+```
+
+```{r posterior survival simple weibull}
+posterior_survival_probability <- weibull_simple |>
+  linpred_draws(
+    marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_simple),
+    value = "mu",
+    transform = TRUE,
+    dpar = "shape"
+  ) |>
+  mutate(scale = mu / gamma(1 + 1 / shape)) |> 
+  group_by(rx, .draw, ) |>
+  summarise(shape = mean(shape), scale = mean(scale)) |>
+  ungroup() |>
+  expand(nesting(.draw, rx, scale,shape), time = modelr::seq_range(colon$time, n = 101)) |>
+  mutate(S = weibull_survival(scale,shape,time))
+
+
+```
+
+```{r median survival simple weibull}
+median_survival <- posterior_survival_probability |> 
+  select(-c(time,S)) |> 
+  distinct() |> 
+  group_by(.draw,rx) |> 
+  summarise(median_survival=median_weibull(scale,shape)) |> 
+  group_by(rx) |> 
+  median_hdi(median_survival)
+
+
+posterior_survival_probability |> 
+  ggplot() +
+  aes(x = time, y = S, group = rx) +
+  stat_lineribbon(.width = c(.99, .95, .8, .5), color = "#08519C") +
+  geom_segment(
+    aes(
+      x = median_survival,
+      xend = median_survival,
+      y = 0,
+      yend = 0.5
+    ),
+    linetype = "dashed",
+    data = median_survival
+  ) +
+  geom_segment(
+    aes(
+      x = 0,
+      xend = median_survival,
+      y = 0.5,
+      yend = 0.5
+    ),
+    linetype = "dashed",
+    data = median_survival
+  ) +
+  facet_grid(rows = vars(rx)) +  scale_fill_brewer(name = "Confidence level") +
+theme_light() +
+  theme(legend.position = "bottom")+
+  labs(title = "Marginal adjusted surival probabilities by treatment group", subtitle = "(Population averaged)", caption = "Dashed lines denote estimated median survival")
+
+```
+
+
+```{r scale and shape weibull distributional fit}
+
+formula_shape_scale <- bf(time+1|cens(censored) ~ rx + sex + age + nodes + mo(differ) + adhere,
+                          shape ~ 0+rx,
+                     family = weibull)
+
+get_prior(formula_shape_scale,
+          data=colon)
+
+prior_shape_scale <- prior(normal(0, 2.5), class = b) +
+  prior(normal(0,0.5), class = b, dpar = shape)
+
+
+
+
+weibull_shape_scale <- brm(formula = formula_shape_scale,
+                     prior = prior_shape_scale,
+                     data = colon,
+                     file = here("fits/weibull_shape_scale.rds"),
+                     file_refit = "never")
+
+prior_summary(weibull_shape_scale)
+
+plot(conditional_effects(weibull_shape_scale),ask=FALSE)
+
+
+
+```
+
+```{r weibull shape scale posterior marginal survival }
+posterior_survival_probability_ss <- weibull_shape_scale |>
+  linpred_draws(
+    marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_shape_scale),
+    value = "mu",
+    transform = TRUE,
+    dpar = "shape"
+  ) |>
+  mutate(scale = weibull_mu_to_scale(mu,shape)) |>
+  group_by(rx, .draw, ) |>
+  summarise(shape = mean(shape), scale = mean(scale)) |>
+  ungroup() |>
+  expand(nesting(.draw, rx, scale,shape), time = modelr::seq_range(colon$time, n = 101)) |>
+  mutate(S = weibull_survival(scale,shape,time))
+
+```
+
+```{r scale shape predicted survival plot}
+posterior_survival_probability_ss |> 
+  ggplot() +
+  aes(x = time, y = S, group = rx) +
+  stat_lineribbon(.width = c(.99, .95, .8, .5), color = "#08519C") +
+  geom_segment(
+    aes(
+      x = median_survival,
+      xend = median_survival,
+      y = 0,
+      yend = 0.5
+    ),
+    linetype = "dashed",
+    data = median_survival
+  ) +
+  geom_segment(
+    aes(
+      x = 0,
+      xend = median_survival,
+      y = 0.5,
+      yend = 0.5
+    ),
+    linetype = "dashed",
+    data = median_survival
+  ) +
+  facet_grid(rows = vars(rx)) +  scale_fill_brewer(name = "Confidence level") +
+theme_light() +
+  theme(legend.position = "bottom") +
+  labs(title = "Marginal adjusted surival probabilities by treatment group", subtitle = "(Population averaged)", caption = "Dashed lines denote estimated median survival")
+
+```
+
+```{r compare rx parameters}
+weibull_simple |>
+  gather_draws(`b_rx.*`, regex = TRUE) |>
+  mutate(model = "simple") |>
+  bind_rows(
+    weibull_shape_scale |>
+      gather_draws(`b_rx.*`, regex = TRUE) |>
+      mutate(model = "scale_shape")
+  ) |> 
+  ggplot() + 
+  aes(x=.value,y=.variable,group=model, fill = model)+
+  stat_gradientinterval(position = position_dodge(width = 1))
+```
+
+```{r compare marginal median survival estimates}
+posterior_survival_probability |>
+  select(-c(time, S)) |>
+  distinct() |>
+  group_by(.draw, rx) |>
+  summarise(median_survival = median_weibull( scale, shape)) |>
+  mutate(model = "simple") |>
+  bind_rows(
+    posterior_survival_probability_ss |>
+      select(-c(time, S)) |>
+      distinct() |>
+      group_by(.draw, rx) |>
+      summarise(median_survival = median_weibull(scale, shape)) |>
+      mutate(model = "shape_scale")
+  ) |>
+  ggplot() +
+  aes(x = median_survival, y = rx,group = model, fill =model ) +
+  stat_gradientinterval(position = position_dodge(width = 1))+
+  labs(title)
+```
