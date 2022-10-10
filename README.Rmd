@@ -5,7 +5,7 @@ output: github_document
 
 ```{r setup, echo=FALSE, warning=FALSE,message=FALSE}
 
-knitr::opts_chunk$set(echo = TRUE,warning=FALSE, tidy = TRUE,message = FALSE)
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE, tidy = TRUE,message = FALSE, fig.dim = c(9,6))
 
 ```
 
