@@ -1,5 +1,5 @@
 ---
-title: "Marginal survival probabilities, marginal survival and hazard ratios from {brms} weibull models"
+title: "Marginal survival probabilities, marginal median survival and hazard ratios from {brms} Weibull models"
 author: "Lars Mølgaard Saxhaug"
 output: github_document
 bibliography: references.bib
@@ -88,7 +88,7 @@ colon <- colon |>
 
 By only allowing $mu$ (and thus $scale$ parameter) to wary among treatment groups, but with a constant common $shape$ parameter, we are estimating a proportionoal hazards model. $shape$ determines whether the hazards are decreasing when $shape<1$ ("infant mortality") or increasing ("aging") when $shape>1$.
 
-> Ordinal vaiables are handled as monotonic effects@bürkner2020
+> Ordinal vaiables are handled as monotonic effects @bürkner2020
 
 ```{r proprotional_weibull_fit}
 formula_scale_only <-
@@ -333,13 +333,13 @@ proportional_posterior |>
       distinct() |>
       group_by(.draw, rx) |>
       summarise(median_survival = median_weibull(scale, shape)) |>
-      mutate(model = "Non-PH Weibull")
+      mutate(Model = "Non-PH Weibull")
   ) |>
   ggplot() +
   aes(x = median_survival,
       y = rx,
-      group = model,
-      fill = model) +
+      group = Model,
+      fill = Model) +
   stat_gradientinterval(position = position_dodge(width = 1)) +
   scale_x_continuous(name = "Median survival time") +
   labs(title = "Population averaged median survival by model and group")

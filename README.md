@@ -1,5 +1,5 @@
-Marginal survival probabilities, marginal survival and hazard ratios
-from {brms} weibull models
+Marginal survival probabilities, marginal median survival and hazard
+ratios from {brms} Weibull models
 ================
 Lars Mølgaard Saxhaug
 
@@ -84,9 +84,7 @@ estimating a proportionoal hazards model. $shape$ determines whether the
 hazards are decreasing when $shape<1$ (“infant mortality”) or increasing
 (“aging”) when $shape>1$.
 
-> Ordinal vaiables are handled as monotonic
-> <a href="mailto:effects@bürkner2020"
-> class="email">effects@bürkner2020</a>
+> Ordinal vaiables are handled as monotonic effects<sup>1</sup>
 
 ``` r
 formula_scale_only <- bf(time | cens(censored) ~ rx + sex + age + nodes + mo(differ) +
@@ -209,7 +207,7 @@ proportional_posterior |>
 
 If we not only let $mu$ (and $scale$) vary, but also $shape$, we get a
 non-proportional hazard model, with a non-constant hazard
-ratio<sup>1</sup>.
+ratio<sup>2</sup>.
 
 ``` r
 formula_shape_scale <- bf(time | cens(censored) ~ rx + sex + age + nodes + mo(differ) +
@@ -379,8 +377,8 @@ proportional_posterior |>
         distinct() |>
         group_by(.draw, rx) |>
         summarise(median_survival = median_weibull(scale, shape)) |>
-        mutate(model = "Non-PH Weibull")) |>
-    ggplot() + aes(x = median_survival, y = rx, group = model, fill = model) + stat_gradientinterval(position = position_dodge(width = 1)) +
+        mutate(Model = "Non-PH Weibull")) |>
+    ggplot() + aes(x = median_survival, y = rx, group = Model, fill = Model) + stat_gradientinterval(position = position_dodge(width = 1)) +
     scale_x_continuous(name = "Median survival time") + labs(title = "Population averaged median survival by model and group")
 ```
 
@@ -388,9 +386,19 @@ proportional_posterior |>
 
 <div id="refs" class="references csl-bib-body">
 
-<div id="ref-zuehlke2013" class="csl-entry">
+<div id="ref-bürkner2020" class="csl-entry">
 
 <span class="csl-left-margin">1. </span><span
+class="csl-right-inline">Bürkner PC, Charpentier E. Modelling monotonic
+effects of ordinal predictors in Bayesian regression models. *British
+Journal of Mathematical and Statistical Psychology*. 2020;73(3):420-451.
+doi:[10.1111/bmsp.12195](https://doi.org/10.1111/bmsp.12195)</span>
+
+</div>
+
+<div id="ref-zuehlke2013" class="csl-entry">
+
+<span class="csl-left-margin">2. </span><span
 class="csl-right-inline">Zuehlke TW. Estimation and testing of
 nonproportional Weibull hazard models. *Applied Economics*.
 2013;45(15):2059-2066.
