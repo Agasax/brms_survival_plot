@@ -66,7 +66,7 @@ covariates.
 colon <- colon |>
   filter(etype == 2) |>
   mutate(
-    censored = 1 - status, # brms uses 0 as non-censored, 1 as right censored
+    censored = 1 - status,# brms uses 0 as non-censored, 1 as right censored
     across(rx, as.factor),
     across(sex,  ~ factor(., labels = c("Female", "Male"))),
     across(c(obstruct, perfor, adhere), as.factor),
@@ -138,36 +138,42 @@ weibull_scale_only
 We then estimate the expected the survival probability and hazard for
 each treatment group at each time point, marginalising over the
 population in the style of the `comparisons` function from the
-`marginaleffects` package.
+`marginaleffects` package. (Thanks to Andrea Discacciati for correcting
+erronous averaging of scale/shape rather than the survival probabilities
+themselves as reported in<sup>2</sup>)
 
 ``` r
 proportional_posterior <- weibull_scale_only |>
   linpred_draws(
-    marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_scale_only),    # duplicate the dataset for each treatment level
+    marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_scale_only), # duplicate the dataset for each treatment level
     value = "mu",
     transform = TRUE,
-    dpar = "shape" # return shape in addition to mu
+    dpar = "shape", # return shape in addition to mu
+    ndraws = 1000 , 
+    seed = 123
   ) |>
-  mutate(scale = mu / gamma(1 + 1 / shape)) |> # reconvert mu and shape to scale
-  group_by(rx, .draw,) |> # group by .draw and rx to find the population averaged scale and shape by rx (though shape is here not varying by group)
-  summarise(shape = mean(shape), scale = mean(scale)) |>
-  ungroup() |>
+  mutate(scale = weibull_mu_to_scale(mu,shape)) |> # reconvert mu and shape to scale
+  ungroup() |> 
   expand(nesting(.draw, rx, scale, shape),
          time = modelr::seq_range(colon$time, n = 101)) |>
   mutate(S = weibull_survival(scale, shape, time),
          # population averaged survival probability for each time point and rx group
-         h = weibull_hazard(scale, shape, time)) # population averaged hazard for each time point and rx group
+         h = weibull_hazard(scale, shape, time)) |> # population averaged hazard for each time point and rx group
+  group_by(time, .draw, rx) |> # group by .draw, time and rx to find the population averaged survival conditional on rx and time 
+  summarise(S = mean(S), h = mean(h)) |> 
+  ungroup()
 ```
 
 Next we compute population averaged median survival times for each
 group.
 
 ``` r
-median_survival <- proportional_posterior |>
-    select(-c(time, S, h)) |>
-    distinct() |>
+median_survival_prop <- weibull_scale_only |>
+    linpred_draws(marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_scale_only),
+        value = "mu", transform = TRUE, dpar = "shape", ndraws = 1000, seed = 123) |>
+    mutate(scale = weibull_mu_to_scale(mu, shape)) |>
     group_by(.draw, rx) |>
-    summarise(median_survival = median_weibull(scale, shape)) |>
+    summarise(median_survival = mean(median_weibull(scale, shape))) |>
     group_by(rx) |>
     median_hdi(median_survival)
 ```
@@ -179,8 +185,8 @@ median survival for each treatment group
 proportional_posterior |>
     ggplot() + aes(x = time, y = S, group = rx) + stat_lineribbon(.width = c(0.99,
     0.95, 0.8, 0.5), color = "#08519C") + geom_segment(aes(x = median_survival, xend = median_survival,
-    y = 0, yend = 0.5), linetype = "dashed", data = median_survival) + geom_segment(aes(x = 0,
-    xend = median_survival, y = 0.5, yend = 0.5), linetype = "dashed", data = median_survival) +
+    y = 0, yend = 0.5), linetype = "dashed", data = median_survival_prop) + geom_segment(aes(x = 0,
+    xend = median_survival, y = 0.5, yend = 0.5), linetype = "dashed", data = median_survival_prop) +
     scale_y_continuous(labels = scales::percent_format()) + facet_grid(rows = vars(rx)) +
     scale_fill_brewer(name = "Confidence level") + theme_light() + theme(legend.position = "bottom") +
     labs(title = "Adjusted surival probabilities by treatment group\nProportional Weibull model",
@@ -207,7 +213,7 @@ proportional_posterior |>
 
 If we not only let $mu$ (and $scale$) vary, but also $shape$, we get a
 non-proportional hazard model, with a non-constant hazard
-ratio<sup>2</sup>.
+ratio<sup>3</sup>.
 
 ``` r
 formula_shape_scale <- bf(time | cens(censored) ~ rx + sex + age + nodes + mo(differ) +
@@ -306,16 +312,40 @@ probablitities
 
 ``` r
 nonprop_posterior <- weibull_shape_scale |>
-    linpred_draws(marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_shape_scale),
-        value = "mu", transform = TRUE, dpar = "shape") |>
-    mutate(scale = weibull_mu_to_scale(mu, shape)) |>
-    group_by(rx, .draw, ) |>
-    summarise(shape = mean(shape), scale = mean(scale)) |>
-    ungroup() |>
-    expand(nesting(.draw, rx, scale, shape), time = modelr::seq_range(colon$time,
-        n = 101)) |>
-    mutate(S = weibull_survival(scale, shape, time), h = weibull_hazard(scale, shape,
-        time))
+  linpred_draws(
+    marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_shape_scale),
+    value = "mu",
+    transform = TRUE,
+    dpar = "shape", # return shape in addition to mu
+    ndraws = 1000 , 
+    seed = 123
+  ) |>
+  mutate(scale = weibull_mu_to_scale(mu,shape)) |> # reconvert mu and shape to scale
+  ungroup() |> 
+  expand(nesting(.draw, rx, scale, shape),
+         time = modelr::seq_range(colon$time, n = 101)) |>
+  mutate(S = weibull_survival(scale, shape, time),         # population averaged survival probability for each time point and rx group
+         h = weibull_hazard(scale, shape, time)) |> # population averaged hazard for each time point and rx group
+  group_by(time, .draw, rx) |> # group by .draw, time and rx to find the population averaged survival conditional on rx and time 
+  summarise(S = mean(S), h = mean(h)) |> 
+  ungroup()
+```
+
+``` r
+  median_survival_nonprop <- weibull_shape_scale |>
+  linpred_draws(
+    marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_shape_scale),
+    value = "mu",
+    transform = TRUE,
+    dpar = "shape", # return shape in addition to mu
+    ndraws = 1000 , 
+    seed = 123
+  ) |> 
+  mutate(scale = weibull_mu_to_scale(mu,shape)) |>
+  group_by(.draw, rx) |>
+  summarise(median_survival = mean(median_weibull(scale, shape))) |>
+  group_by(rx) |>
+  median_hdi(median_survival)
 ```
 
 First let’s plot the population averaged survival curves and estimated
@@ -325,8 +355,8 @@ median survival estimates
 nonprop_posterior |>
     ggplot() + aes(x = time, y = S, group = rx) + stat_lineribbon(.width = c(0.99,
     0.95, 0.8, 0.5), color = "#08519C") + geom_segment(aes(x = median_survival, xend = median_survival,
-    y = 0, yend = 0.5), linetype = "dashed", data = median_survival) + geom_segment(aes(x = 0,
-    xend = median_survival, y = 0.5, yend = 0.5), linetype = "dashed", data = median_survival) +
+    y = 0, yend = 0.5), linetype = "dashed", data = median_survival_nonprop) + geom_segment(aes(x = 0,
+    xend = median_survival, y = 0.5, yend = 0.5), linetype = "dashed", data = median_survival_nonprop) +
     scale_y_continuous(labels = scales::percent_format()) + facet_grid(rows = vars(rx)) +
     scale_fill_brewer(name = "Confidence level") + theme_light() + theme(legend.position = "bottom") +
     labs(title = "Adjusted surival curves by treatment group", subtitle = "(Population averaged)",
@@ -362,24 +392,46 @@ nonprop_posterior |>
 
 ![](README_files/figure-gfm/rx%20hazards-1.png)<!-- -->
 
-Finally, let’s comapre the population averaged median survival by group
+Finally, let’s compare the population averaged median survival by group
 and model
 
 ``` r
-proportional_posterior |>
-    select(-c(time, S)) |>
-    distinct() |>
-    group_by(.draw, rx) |>
-    summarise(median_survival = median_weibull(scale, shape)) |>
-    mutate(Model = "PH Weibull") |>
-    bind_rows(nonprop_posterior |>
-        select(-c(time, S)) |>
-        distinct() |>
-        group_by(.draw, rx) |>
-        summarise(median_survival = median_weibull(scale, shape)) |>
-        mutate(Model = "Non-PH Weibull")) |>
-    ggplot() + aes(x = median_survival, y = rx, group = Model, fill = Model) + stat_gradientinterval(position = position_dodge(width = 1)) +
-    scale_x_continuous(name = "Median survival time") + labs(title = "Population averaged median survival by model and group")
+weibull_shape_scale |>
+  linpred_draws(
+    marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_scale_only),
+    value = "mu",
+    transform = TRUE,
+    dpar = "shape", # return shape in addition to mu
+    ndraws = 1000 , 
+    seed = 123
+  ) |> 
+  mutate(scale = weibull_mu_to_scale(mu,shape)) |>
+  group_by(.draw, rx) |>
+  summarise(median_survival = mean(median_weibull(scale, shape)))|>
+  mutate(Model = "PH Weibull") |>
+  bind_rows(
+    weibull_shape_scale |>
+  linpred_draws(
+    marginaleffects::datagridcf(rx = levels(colon$rx), model = weibull_shape_scale),
+    value = "mu",
+    transform = TRUE,
+    dpar = "shape", # return shape in addition to mu
+    ndraws = 1000 , 
+    seed = 123
+  ) |> 
+  mutate(scale = weibull_mu_to_scale(mu,shape)) |>
+  group_by(.draw, rx) |>
+  summarise(median_survival = mean(median_weibull(scale, shape))) |>
+      mutate(Model = "Non-PH Weibull")
+  ) |>
+  ggplot() +
+  aes(x = median_survival,
+      y = rx,
+      group = Model,
+      fill = Model) +
+  stat_gradientinterval(position = position_dodge(width = 1)) +
+  scale_x_continuous(name = "Median survival time") +
+  labs(title = "Population averaged median survival by model and group")
 ```
 
 ![](README_files/figure-gfm/compare%20marginal%20median%20survival%20estimates-1.png)<!-- -->
@@ -396,9 +448,19 @@ doi:[10.1111/bmsp.12195](https://doi.org/10.1111/bmsp.12195)</span>
 
 </div>
 
-<div id="ref-zuehlke2013" class="csl-entry">
+<div id="ref-brilleman2020" class="csl-entry">
 
 <span class="csl-left-margin">2. </span><span
+class="csl-right-inline">Brilleman SL, Elci EM, Novik JB, Wolfe R.
+Bayesian survival analysis using the rstanarm r package. Published
+online 2020.
+doi:[10.48550/ARXIV.2002.09633](https://doi.org/10.48550/ARXIV.2002.09633)</span>
+
+</div>
+
+<div id="ref-zuehlke2013" class="csl-entry">
+
+<span class="csl-left-margin">3. </span><span
 class="csl-right-inline">Zuehlke TW. Estimation and testing of
 nonproportional Weibull hazard models. *Applied Economics*.
 2013;45(15):2059-2066.
